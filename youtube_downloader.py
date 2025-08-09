@@ -5,7 +5,20 @@ import time
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from pytube import YouTube
+
+
+def normalize_url(url: str) -> str:
+    """Return YouTube link stripped of unnecessary query parameters."""
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower()
+    if netloc in ("youtu.be", "www.youtu.be"):
+        return urlunparse(parsed._replace(query=""))
+    if netloc.endswith("youtube.com"):
+        qs = [(k, v) for k, v in parse_qsl(parsed.query) if k != "si"]
+        return urlunparse(parsed._replace(query=urlencode(qs)))
+    return url
 
 
 class YouTubeDownloader(tk.Tk):
@@ -112,7 +125,7 @@ class YouTubeDownloader(tk.Tk):
     # -------------------------------------------------------------
     def fetch_info(self) -> None:
         """Validate URL and populate quality options."""
-        url = self.url_var.get().strip()
+        url = normalize_url(self.url_var.get().strip())
         if not url:
             return
         try:
