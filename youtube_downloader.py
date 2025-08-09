@@ -32,8 +32,7 @@ class YouTubeDownloader(tk.Tk):
         self.url_var = tk.StringVar()
         url_entry = ttk.Entry(url_frame, textvariable=self.url_var, width=60)
         url_entry.pack(side="left", fill="x", expand=True, padx=5)
-        url_entry.bind("<Return>", lambda e: self.fetch_info())
-        url_entry.bind("<FocusOut>", lambda e: self.fetch_info())
+        ttk.Button(url_frame, text="Sprawdź", command=self.fetch_info).pack(side="left")
         self.info_label = ttk.Label(self, text="Wprowadź link do filmu.")
         self.info_label.pack(pady=5)
 
@@ -42,21 +41,23 @@ class YouTubeDownloader(tk.Tk):
         option_frame.pack(fill="x", padx=10, pady=5)
         self.option_var = tk.StringVar(value="video")
         ttk.Radiobutton(option_frame, text="Film", variable=self.option_var,
-                        value="video", command=self.update_filename).pack(side="left", padx=5)
+                        value="video", command=self.on_option_change).pack(side="left", padx=5)
         ttk.Radiobutton(option_frame, text="Muzyka", variable=self.option_var,
-                        value="audio", command=self.update_filename).pack(side="left", padx=5)
+                        value="audio", command=self.on_option_change).pack(side="left", padx=5)
         ttk.Radiobutton(option_frame, text="Film + Muzyka", variable=self.option_var,
-                        value="both", command=self.update_filename).pack(side="left", padx=5)
+                        value="both", command=self.on_option_change).pack(side="left", padx=5)
 
         # Video sound options
         video_type_frame = ttk.Frame(self)
         video_type_frame.pack(fill="x", padx=10, pady=5)
         ttk.Label(video_type_frame, text="Wideo:").pack(side="left")
         self.video_sound_var = tk.StringVar(value="sound")
-        ttk.Radiobutton(video_type_frame, text="z dźwiękiem", variable=self.video_sound_var,
-                        value="sound", command=self.populate_video_qualities).pack(side="left", padx=5)
-        ttk.Radiobutton(video_type_frame, text="bez dźwięku", variable=self.video_sound_var,
-                        value="nosound", command=self.populate_video_qualities).pack(side="left", padx=5)
+        self.sound_rb = ttk.Radiobutton(video_type_frame, text="z dźwiękiem", variable=self.video_sound_var,
+                                        value="sound", command=self.populate_video_qualities)
+        self.sound_rb.pack(side="left", padx=5)
+        self.nosound_rb = ttk.Radiobutton(video_type_frame, text="bez dźwięku", variable=self.video_sound_var,
+                                          value="nosound", command=self.populate_video_qualities)
+        self.nosound_rb.pack(side="left", padx=5)
 
         # Quality selection
         quality_frame = ttk.LabelFrame(self, text="Jakość")
@@ -104,6 +105,9 @@ class YouTubeDownloader(tk.Tk):
         # Download button
         self.download_btn = ttk.Button(self, text="Pobierz", command=self.start_download, state="disabled")
         self.download_btn.pack(pady=10)
+
+        # Set initial states
+        self.on_option_change()
 
     # -------------------------------------------------------------
     def fetch_info(self) -> None:
@@ -157,16 +161,41 @@ class YouTubeDownloader(tk.Tk):
         video_suffix = "film_w_sound" if self.video_sound_var.get() == "sound" else "film_no_sound"
         if option in ("video", "both"):
             self.video_filename.set(f"{title}-{vq}-{video_suffix}.mp4")
-            self.video_entry.config(state="normal")
         else:
             self.video_filename.set("")
-            self.video_entry.config(state="disabled")
         if option in ("audio", "both"):
             self.audio_filename.set(f"{title}-{aq}-music.mp3")
-            self.audio_entry.config(state="normal")
         else:
             self.audio_filename.set("")
-            self.audio_entry.config(state="disabled")
+
+    # -------------------------------------------------------------
+    def on_option_change(self) -> None:
+        """Enable/disable widgets depending on download option."""
+        option = self.option_var.get()
+        video_enabled = option in ("video", "both")
+        audio_enabled = option in ("audio", "both")
+
+        video_state = "normal" if video_enabled else "disabled"
+        audio_state = "normal" if audio_enabled else "disabled"
+
+        self.sound_rb.config(state=video_state)
+        self.nosound_rb.config(state=video_state)
+        self.video_box.config(state="readonly" if video_enabled else "disabled")
+        self.video_entry.config(state="normal" if video_enabled else "disabled")
+        if not video_enabled:
+            self.video_quality.set("")
+            self.video_filename.set("")
+        else:
+            if self.streams:
+                self.populate_video_qualities()
+
+        self.audio_box.config(state="readonly" if audio_enabled else "disabled")
+        self.audio_entry.config(state="normal" if audio_enabled else "disabled")
+        if not audio_enabled:
+            self.audio_quality.set("")
+            self.audio_filename.set("")
+
+        self.update_filename()
 
     # -------------------------------------------------------------
     def choose_directory(self) -> None:
