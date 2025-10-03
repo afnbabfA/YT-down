@@ -2,11 +2,12 @@ import os
 import re
 import threading
 import time
-from pathlib import Path
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-from pytube import YouTube
+
+import yt_dlp
 
 
 def normalize_url(url: str) -> str:
@@ -31,7 +32,6 @@ class YouTubeDownloader(tk.Tk):
         self.resizable(False, False)
         self.yt = None
         self.streams = {}
-        self.start_time = None
 
         self._build_widgets()
 
@@ -129,24 +129,26 @@ class YouTubeDownloader(tk.Tk):
         if not url:
             return
         try:
-            self.yt = YouTube(url, on_progress_callback=self.on_progress)
-            self.info_label.config(text=f"Tytuł: {self.yt.title}")
+            with yt_dlp.YoutubeDL({'quiet': True, 'format': 'best'}) as ydl:
+                self.yt = ydl.extract_info(url, download=False)
+            self.info_label.config(text=f"Tytuł: {self.yt.get('title', 'Brak tytułu')}")
             self.populate_streams()
             self.download_btn.config(state="normal")
-        except Exception:
-            self.info_label.config(text="Nieprawidłowy link")
+        except Exception as e:
+            self.info_label.config(text=f"Nieprawidłowy link: {e}")
             self.download_btn.config(state="disabled")
 
     # -------------------------------------------------------------
     def populate_streams(self) -> None:
         """Fetch available quality streams."""
+        formats = self.yt.get('formats', [])
         self.streams = {
-            "video_sound": self.yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc(),
-            "video_nosound": self.yt.streams.filter(only_video=True, file_extension="mp4").order_by("resolution").desc(),
-            "audio": self.yt.streams.filter(only_audio=True).order_by("abr").desc(),
+            "video_sound": sorted([f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('ext') == 'mp4'], key=lambda x: x.get('height', 0), reverse=True),
+            "video_nosound": sorted([f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') == 'none' and f.get('ext') == 'mp4'], key=lambda x: x.get('height', 0), reverse=True),
+            "audio": sorted([f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none'], key=lambda x: x.get('abr', 0), reverse=True),
         }
         self.populate_video_qualities()
-        self.audio_box["values"] = [s.abr for s in self.streams["audio"]]
+        self.audio_box["values"] = [f"{s.get('abr', 0):.0f}kbps" for s in self.streams["audio"]]
         if self.audio_box["values"]:
             self.audio_box.current(0)
         self.update_filename()
@@ -154,7 +156,7 @@ class YouTubeDownloader(tk.Tk):
     # -------------------------------------------------------------
     def populate_video_qualities(self) -> None:
         key = "video_sound" if self.video_sound_var.get() == "sound" else "video_nosound"
-        self.video_box["values"] = [s.resolution for s in self.streams.get(key, [])]
+        self.video_box["values"] = list(dict.fromkeys([s['resolution'] for s in self.streams.get(key, [])])) # unique
         if self.video_box["values"]:
             self.video_box.current(0)
         self.update_filename()
@@ -167,9 +169,9 @@ class YouTubeDownloader(tk.Tk):
     def update_filename(self) -> None:
         if not self.yt:
             return
-        title = self.sanitize(self.yt.title)
+        title = self.sanitize(self.yt.get('title', 'video'))
         vq = self.video_quality.get()
-        aq = self.audio_quality.get()
+        aq = self.audio_quality.get().replace('kbps', '')
         option = self.option_var.get()
         video_suffix = "film_w_sound" if self.video_sound_var.get() == "sound" else "film_no_sound"
         if option in ("video", "both"):
@@ -177,7 +179,7 @@ class YouTubeDownloader(tk.Tk):
         else:
             self.video_filename.set("")
         if option in ("audio", "both"):
-            self.audio_filename.set(f"{title}-{aq}-music.mp3")
+            self.audio_filename.set(f"{title}-{aq}kbps-music.mp3")
         else:
             self.audio_filename.set("")
 
@@ -235,16 +237,32 @@ class YouTubeDownloader(tk.Tk):
     def download(self) -> None:
         option = self.option_var.get()
         directory = self.dir_var.get()
+        url = self.yt['webpage_url']
+
+        def do_download(opts, filename):
+            self.progress["value"] = 0
+            opts['outtmpl'] = os.path.join(directory, filename)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+
         if option in ("video", "both"):
             stream = self.get_selected_video()
-            self.progress["value"] = 0
-            self.start_time = time.time()
-            stream.download(output_path=directory, filename=self.video_filename.get())
+            if not stream: return
+            opts = {'progress_hooks': [self.on_progress], 'format': stream['format_id']}
+            do_download(opts, self.video_filename.get())
+
         if option in ("audio", "both"):
             stream = self.get_selected_audio()
-            self.progress["value"] = 0
-            self.start_time = time.time()
-            stream.download(output_path=directory, filename=self.audio_filename.get())
+            if not stream: return
+            filename = self.audio_filename.get()
+            base_filename, _ = os.path.splitext(filename)
+            opts = {
+                'progress_hooks': [self.on_progress],
+                'format': stream['format_id'],
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+            }
+            do_download(opts, base_filename)
+
         self.after(0, lambda: self.progress_info.config(text="Zakończono"))
 
     # -------------------------------------------------------------
@@ -252,36 +270,41 @@ class YouTubeDownloader(tk.Tk):
         quality = self.video_quality.get()
         key = "video_sound" if self.video_sound_var.get() == "sound" else "video_nosound"
         for s in self.streams.get(key, []):
-            if s.resolution == quality:
+            if s['resolution'] == quality:
                 return s
         return None
 
     # -------------------------------------------------------------
     def get_selected_audio(self):
-        quality = self.audio_quality.get()
+        quality = self.audio_quality.get().replace('kbps', '')
         for s in self.streams.get("audio", []):
-            if s.abr == quality:
+            if f"{s.get('abr', 0):.0f}" == quality:
                 return s
         return None
 
     # -------------------------------------------------------------
-    def on_progress(self, stream, chunk, bytes_remaining) -> None:
-        total = stream.filesize
-        downloaded = total - bytes_remaining
-        percent = downloaded / total * 100
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        speed = downloaded / elapsed if elapsed > 0 else 0
-        remaining = bytes_remaining / speed if speed > 0 else 0
+    def on_progress(self, d) -> None:
+        if d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate')
+            downloaded = d.get('downloaded_bytes', 0)
+            if not total:
+                self.after(0, lambda: self.progress_info.config(text=f'Pobrano {downloaded/1024/1024:.2f} MB'))
+                return
+            percent = downloaded / total * 100
+            speed = d.get('speed', 0) or 0
+            remaining = d.get('eta', 0) or 0
 
-        def _update():
-            self.progress["value"] = percent
-            info = (f"{percent:.1f}% | "
-                    f"{downloaded/1024/1024:.2f}/{total/1024/1024:.2f} MB | "
-                    f"{speed/1024:.2f} kB/s | "
-                    f"{remaining:.1f} s do końca")
-            self.progress_info.config(text=info)
-
-        self.after(0, _update)
+            def _update():
+                self.progress["value"] = percent
+                info = (f"{percent:.1f}% | "
+                        f"{downloaded/1024/1024:.2f}/{total/1024/1024:.2f} MB | "
+                        f"{speed/1024:.2f} kB/s | "
+                        f"{remaining:.1f} s do końca")
+                self.progress_info.config(text=info)
+            self.after(0, _update)
+        elif d['status'] == 'finished':
+            self.progress["value"] = 100
+            self.after(0, lambda: self.progress_info.config(text="Pobieranie zakończone, przetwarzanie..."))
 
 
 if __name__ == "__main__":
